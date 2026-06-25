@@ -7,6 +7,8 @@ using System.IO;
 using UnityEngine;
 using System.Linq;
 using System.Text.RegularExpressions;
+using UnityEngine.Networking;
+using System.Threading.Tasks;
 
 #if UNITY_EDITOR
 using UnityEditor;
@@ -64,6 +66,12 @@ namespace Ikeiwa.PackageVerificatorNamespaceTemplate
         [Tooltip("Packages required for this asset")]
         public List<PackageRequirement> packageRequirements;
 
+        [Header("Version Checker")]
+        [Tooltip("Link to a raw .txt file containing the latest version number")]
+        public string latestVersionUrl = "";
+        [Tooltip("Message to show if the current version is outdated. Use {version} to show the latest version string.")]
+        public VersionError outdatedVersionError;
+
         [Header("Advanced")]  
         [Tooltip("Text of the \"select package asset\" button in the verificator window")]
         public string pingAssetButtonText = "Select package Asset";
@@ -83,6 +91,14 @@ namespace Ikeiwa.PackageVerificatorNamespaceTemplate
                     missingError = new VersionError{message = "Could not find VRChat SDK 3.0, please verify if it's installed.", buttonText = "Fix", buttonURL = "https://creators.vrchat.com/sdk/"},
                     versionError = new VersionError{message = "You are using an incompatible version of the SDK, please update it.", buttonText = "Fix", buttonURL = "https://creators.vrchat.com/sdk/updating-the-sdk"},
                 }
+            };
+
+            outdatedVersionError = new VersionError
+            {
+                message = "A new version of this asset ({version}) is available! Please update.",
+                buttonText = "Download",
+                buttonURL = "",
+                messageType = MessageType.Warning
             };
         }
     }
@@ -138,7 +154,26 @@ namespace Ikeiwa.PackageVerificatorNamespaceTemplate
             }
         }
 
-        public static void CheckInstall(PackageRulesTemplate rules, bool ignoreDoNotShow = false)
+        private static async Task<string> FetchLatestVersion(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return null;
+
+            using (UnityWebRequest webRequest = UnityWebRequest.Get(url))
+            {
+                var operation = webRequest.SendWebRequest();
+
+                while (!operation.isDone)
+                    await Task.Yield();
+
+                if (webRequest.result == UnityWebRequest.Result.Success)
+                {
+                    return webRequest.downloadHandler.text.Trim();
+                }
+            }
+            return null;
+        }
+
+        public static async void CheckInstall(PackageRulesTemplate rules, bool ignoreDoNotShow = false)
         {
             if (!rules)
                 return;
@@ -189,6 +224,31 @@ namespace Ikeiwa.PackageVerificatorNamespaceTemplate
                 }
             }
 #endif // !VRC_SDK_VRCSDK3
+
+            // --- CHECK REMOTE VERSION ---
+            if (!string.IsNullOrEmpty(rules.latestVersionUrl))
+            {
+                string latestVersionStr = await FetchLatestVersion(rules.latestVersionUrl);
+                if (!string.IsNullOrEmpty(latestVersionStr))
+                {
+                    string cleanLatest = SimplifyVersion(latestVersionStr);
+                    string cleanCurrent = SimplifyVersion(rules.packageVersion);
+
+                    if (!CompareVersions(cleanCurrent, cleanLatest))
+                    {
+                        VersionError customErrorTemplate = rules.outdatedVersionError;
+                        
+                        VersionError finalOutdatedError = new VersionError
+                        {
+                            message = customErrorTemplate.message?.Replace("{version}", latestVersionStr),
+                            buttonText = customErrorTemplate.buttonText,
+                            buttonURL = customErrorTemplate.buttonURL,
+                            messageType = customErrorTemplate.messageType
+                        };
+                        errors.Add(finalOutdatedError);
+                    }
+                }
+            }
 
             if (errors.Count > 0)
                 PackageVersionVerificatorWindow.DisplayError(rules,errors);
